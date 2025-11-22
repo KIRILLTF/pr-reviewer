@@ -2,12 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
-	"fmt"
-	"github.com/gorilla/mux"
+
 	"pr-reviewer-service/internal/models"
 	"pr-reviewer-service/internal/storage"
+
+	"github.com/gorilla/mux"
 )
 
 type Handler struct {
@@ -31,6 +33,12 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/pullRequest/merge", h.mergePR).Methods("POST")
 	r.HandleFunc("/pullRequest/reassign", h.reassignReviewer).Methods("POST")
 	r.HandleFunc("/users/getReview", h.listPRsAssignedTo).Methods("GET")
+	
+	// Statistics
+	r.HandleFunc("/stats/assignments", h.getStats).Methods("GET")
+	
+	// Mass deactivation
+	r.HandleFunc("/team/{name}/deactivate", h.massDeactivate).Methods("POST")
 	
 	// Health check
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -138,56 +146,56 @@ func (h *Handler) setUserActive(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createPR(w http.ResponseWriter, r *http.Request) {
-    var in struct {
-        PullRequestID   string `json:"pull_request_id"`
-        PullRequestName string `json:"pull_request_name"`
-        AuthorID        string `json:"author_id"`
-    }
-    
-    fmt.Printf("DEBUG: Received PR creation request\n")
-    
-    if err := decode(r, &in); err != nil {
-        fmt.Printf("DEBUG: JSON decode error: %v\n", err)
-        respondError(w, "400", "BAD_REQUEST", "Invalid request body")
-        return
-    }
-    
-    fmt.Printf("DEBUG: Parsed data - PR ID: %s, Name: %s, Author: %s\n", in.PullRequestID, in.PullRequestName, in.AuthorID)
+	var in struct {
+		PullRequestID   string `json:"pull_request_id"`
+		PullRequestName string `json:"pull_request_name"`
+		AuthorID        string `json:"author_id"`
+	}
+	
+	fmt.Printf("DEBUG: Received PR creation request\n")
+	
+	if err := decode(r, &in); err != nil {
+		fmt.Printf("DEBUG: JSON decode error: %v\n", err)
+		respondError(w, "400", "BAD_REQUEST", "Invalid request body")
+		return
+	}
+	
+	fmt.Printf("DEBUG: Parsed data - PR ID: %s, Name: %s, Author: %s\n", in.PullRequestID, in.PullRequestName, in.AuthorID)
 
-    if in.PullRequestID == "" || in.PullRequestName == "" || in.AuthorID == "" {
-        fmt.Printf("DEBUG: Missing required fields\n")
-        respondError(w, "400", "BAD_REQUEST", "Missing required fields")
-        return
-    }
+	if in.PullRequestID == "" || in.PullRequestName == "" || in.AuthorID == "" {
+		fmt.Printf("DEBUG: Missing required fields\n")
+		respondError(w, "400", "BAD_REQUEST", "Missing required fields")
+		return
+	}
 
-    pr := models.PullRequest{
-        ID:       in.PullRequestID,
-        Title:    in.PullRequestName,
-        AuthorID: in.AuthorID,
-        Status:   models.OPEN,
-        CreatedAt: func() *time.Time { t := time.Now(); return &t }(),
-    }
+	pr := models.PullRequest{
+		ID:       in.PullRequestID,
+		Title:    in.PullRequestName,
+		AuthorID: in.AuthorID,
+		Status:   models.OPEN,
+		CreatedAt: func() *time.Time { t := time.Now(); return &t }(),
+	}
 
-    fmt.Printf("DEBUG: Creating PR in database...\n")
-    if err := h.store.CreatePR(pr); err != nil {
-        fmt.Printf("DEBUG: Store error: %v\n", err)
-        if err.Error() == "PR_EXISTS" {
-            respondError(w, "409", "PR_EXISTS", "PR id already exists")
-        } else {
-            respondError(w, "404", "NOT_FOUND", err.Error())
-        }
-        return
-    }
+	fmt.Printf("DEBUG: Creating PR in database...\n")
+	if err := h.store.CreatePR(pr); err != nil {
+		fmt.Printf("DEBUG: Store error: %v\n", err)
+		if err.Error() == "PR_EXISTS" {
+			respondError(w, "409", "PR_EXISTS", "PR id already exists")
+		} else {
+			respondError(w, "404", "NOT_FOUND", err.Error())
+		}
+		return
+	}
 
-    // Get the created PR with reviewers assigned
-    createdPR, err := h.store.GetPR(pr.ID)
-    if err != nil {
-        respondError(w, "500", "INTERNAL_ERROR", "Failed to get created PR")
-        return
-    }
+	// Get the created PR with reviewers assigned
+	createdPR, err := h.store.GetPR(pr.ID)
+	if err != nil {
+		respondError(w, "500", "INTERNAL_ERROR", "Failed to get created PR")
+		return
+	}
 
-    fmt.Printf("DEBUG: PR created successfully\n")
-    respondJSON(w, 201, map[string]interface{}{"pr": createdPR})
+	fmt.Printf("DEBUG: PR created successfully\n")
+	respondJSON(w, 201, map[string]interface{}{"pr": createdPR})
 }
 
 func (h *Handler) mergePR(w http.ResponseWriter, r *http.Request) {
@@ -274,4 +282,37 @@ func (h *Handler) listPRsAssignedTo(w http.ResponseWriter, r *http.Request) {
 		"user_id":       userID,
 		"pull_requests": shortPRs,
 	})
+}
+
+// New method for statistics
+func (h *Handler) getStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.store.GetStats()
+	if err != nil {
+		respondError(w, "500", "INTERNAL_ERROR", "Failed to get stats")
+		return
+	}
+
+	respondJSON(w, 200, stats)
+}
+
+// New method for mass deactivation
+func (h *Handler) massDeactivate(w http.ResponseWriter, r *http.Request) {
+	teamName := mux.Vars(r)["name"]
+	
+	var in struct {
+		ExcludeUsers []string `json:"exclude_users"`
+	}
+	
+	if err := decode(r, &in); err != nil {
+		respondError(w, "400", "BAD_REQUEST", "Invalid request body")
+		return
+	}
+
+	result, err := h.store.MassDeactivate(teamName, in.ExcludeUsers)
+	if err != nil {
+		respondError(w, "500", "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	respondJSON(w, 200, result)
 }

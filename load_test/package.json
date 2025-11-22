@@ -1,0 +1,11 @@
+{
+  "name": "pr-reviewer-load-test",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "loadtest": "k6 run loadtest.js"
+  },
+  "devDependencies": {
+    "k6": "^0.0.0"
+  }
+}
