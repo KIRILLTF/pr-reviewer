@@ -17,6 +17,25 @@ services:
       - db_data:/var/lib/postgresql/data
       - ./migrations:/migrations
 
+  migrate:
+    image: postgres:15
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: prservice
+    volumes:
+      - ./migrations:/migrations
+    command: |
+      bash -c "
+        echo 'Applying database migrations...'
+        psql -f /migrations/001_init.sql
+        echo 'Migrations completed'
+      "
+
   service:
     build: .
     ports:
@@ -24,8 +43,8 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/prservice?sslmode=disable
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ./:/app
 
